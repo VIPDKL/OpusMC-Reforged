@@ -1,0 +1,44 @@
+# OpusMC · Apache 配置
+# 非 Apache 主机（Nginx 等）会忽略本文件，不影响游戏运行。
+# 若主机报 500 错误，把本文件临时改名即可排查。
+
+# 入口文件：确保访问 /MC/ 时执行 index.php
+DirectoryIndex index.php
+
+# 禁止列目录
+Options -Indexes
+
+# 默认字符集
+AddDefaultCharset UTF-8
+
+# 正确的 MIME 类型（个别老主机会把 .js 当纯文本，导致游戏白屏）
+<IfModule mod_mime.c>
+    AddType text/javascript .js
+    AddType application/json .json
+    AddType image/svg+xml .svg
+    AddType image/png .png
+</IfModule>
+
+# 静态资源缓存：JS 通过 index.php 里的 ?v= 版本号自动失效
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresByType text/javascript "access plus 7 days"
+    ExpiresByType application/javascript "access plus 7 days"
+    ExpiresByType image/png "access plus 30 days"
+    ExpiresByType text/css "access plus 7 days"
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+</IfModule>
+
+# 不对外暴露说明文档和自检脚本（自检脚本留着自己用时可删掉这段）
+<FilesMatch "^(部署说明\.md|config\.php|config\.local\.php|\.htaccess)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>

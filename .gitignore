@@ -1,14 +1,15 @@
-# Python
-__pycache__/
-*.pyc
+# local secrets
+config.local.php
 
-# Minecraft game files (never commit the jar)
-*.jar
+# runtime data
+data/rooms/
+data/mods/m-*.json
+data/mods/.rate/
+data/mods/.used-captcha.json
+data/mods/.index.lock
 
-# Editors / OS
-.vscode/
-.idea/
-.claude/
-Thumbs.db
-Desktop.ini
+# release artifacts / OS noise
+MC-fixed*.zip
+*.log
 .DS_Store
+Thumbs.db

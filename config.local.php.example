@@ -1,0 +1,6 @@
+<?php
+// 复制为 config.local.php 后填写；不要把真实 key 提交到 GitHub
+return array(
+    'geetest_key' => '在这里填写极验行为验证 4.0 的验证 key',
+    'admin_key'   => '可选的模组库管理员密钥',
+);

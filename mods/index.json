@@ -1,0 +1,42 @@
+[
+  {
+    "id": "chain-mining",
+    "name": "连锁挖矿",
+    "author": "OpusMC",
+    "version": "2.0.0",
+    "side": "both",
+    "official": true,
+    "file": "chain-mining.js",
+    "description": "按 U 开关；可在模组配置里调范围、最大数量、石头3×3、矿脉连锁。"
+  },
+  {
+    "id": "mod-info",
+    "name": "显示所有模组",
+    "author": "OpusMC",
+    "version": "2.0.0",
+    "side": "client",
+    "official": true,
+    "file": "mod-info.js",
+    "description": "按 M 打开模组列表，显示名称/作者/版本/类型/配置。"
+  },
+  {
+    "id": "sample-content",
+    "name": "示例：自定义方块与物品",
+    "author": "OpusMC",
+    "version": "1.0.0",
+    "side": "both",
+    "official": true,
+    "file": "sample-content.js",
+    "description": "演示方块/物品/配方/矿石生成/指令/按键/事件/配置的完整写法。"
+  },
+  {
+    "id": "sample-mob",
+    "name": "示例：自定义生物",
+    "author": "OpusMC",
+    "version": "1.0.0",
+    "side": "both",
+    "official": true,
+    "file": "sample-mob.js",
+    "description": "演示实体类型、掉落物与生成指令；模型可复用原版。"
+  }
+]

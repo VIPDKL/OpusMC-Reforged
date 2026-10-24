@@ -1,0 +1,8 @@
+# 联机房间数据，禁止浏览器直接访问
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+</IfModule>
