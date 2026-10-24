@@ -7,6 +7,12 @@
 > 新增公开模组库与极验行为验证 4.0，并合并了 [BingoBST/Webgame](https://github.com/BingoBST/Webgame)
 > 的部分资源、方块、结构与附魔内容（见 [`docs/MERGE-NOTES.md`](docs/MERGE-NOTES.md)）。
 
+## 下载
+
+- GitHub Releases：<https://github.com/VIPDKL/OpusMC-Reforged/releases/tag/v4.0.0>
+- `MC-fixed-v4.zip`：完整部署包（不含真实极验 key）
+- 仓库根目录即完整源代码（`js/`、`api/`、`mods/`、`data/`、`docs/`）
+
 ## 快速开始
 
 ```bash
