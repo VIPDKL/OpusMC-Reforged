@@ -59,6 +59,8 @@ class Net {
     this._closed = false;
     this.tabOpen = false;
     this.tickCount = 0;
+    this.progress = 0;
+    this.statusMessage = '';
     this._applying = false;
     this.pendingSlots = new Set();
     this.dropping = false;
@@ -136,14 +138,15 @@ class Net {
   async host(opts) {
     this.closeAll();
     this._closed = false;
+    this.progress = 0.08; this.statusMessage = '正在创建房间…';
     this.role = 'host';
     this.name = (opts && opts.name) || '房主';
     this.max = Math.max(2, Math.min(20, (opts && opts.max) || 8));
-    this.status = 'creating';
+    this.status = 'creating'; this.progress = 0.12; this.statusMessage = '正在创建房间…';
     try {
       const d = await this.api('create', { name: this.name, max: this.max });
       this.room = d.code; this.code = d.code; this.token = d.token; this.max = d.max || this.max;
-      this.status = 'waiting';
+      this.status = 'waiting'; this.progress = 1; this.statusMessage = '房间已创建，等待玩家加入';
       this.game.ui.message('房间已创建，房间码：' + this.room, '#55FF55');
       this.game.ui.message('加入IP：users.66ghz.com.MC2.' + this.room, '#55FFFF');
       this.hostPoll();
@@ -248,11 +251,11 @@ class Net {
       rec.ready = true;
       this.pendingSlots.delete(rec.slot);
       if (this.role === 'host') {
-        if (this.status === 'waiting' || this.status === 'creating') this.status = 'connected';
+        if (this.status === 'waiting' || this.status === 'creating') { this.status = 'connected'; this.progress = 0.7; this.statusMessage = '连接成功，准备同步世界…'; }
         this.game.ui.message(rec.name + ' 加入了房间', '#55FFFF');
         this.sendInit(rec);
       } else {
-        this.status = 'connected';
+        this.status = 'connected'; this.progress = 0.7; this.statusMessage = '连接成功，准备同步世界…';
         this.game.ui.message('联机成功！房主：' + this.hostName, '#55FFFF');
         this.api('joined', { code: this.room, token: this.token, slot: this.slot }).catch(() => { });
         this.sendTo(rec, { type: 'hello', name: this.name });
@@ -381,6 +384,7 @@ class Net {
   async join(ipOrRoom, name) {
     this.closeAll();
     this._closed = false;
+    this.progress = 0.08; this.statusMessage = '正在连接服务器…';
     this.role = 'guest';
     this.name = name || '玩家';
     const room = extractRoomCode(ipOrRoom);
@@ -391,7 +395,7 @@ class Net {
       const d = await this.api('join', { code: room, name: this.name });
       this.token = d.token; this.slot = d.slot; this.hostName = d.hostName || '房主';
       this.max = d.max || this.max;
-      this.status = 'connecting';
+      this.status = 'connecting'; this.progress = 0.35; this.statusMessage = '已进入房间，等待房主响应…';
       let offer = null;
       for (let i = 0; i < 30 && !offer; i++) {
         const p = await this.api('pollGuest', { code: room, token: this.token });
@@ -401,6 +405,7 @@ class Net {
         else await new Promise(r => setTimeout(r, 700));
       }
       if (!offer) throw new Error('等待房主响应超时（房间码是否正确？房主是否还在等待？）');
+      this.progress = 0.55; this.statusMessage = '正在建立 P2P 连接…';
       const rec = { slot: 0, name: this.hostName, host: true, pc: null, dc: null, ready: false, spawn: null, yaw: 0, retries: 0, createdAt: performance.now() };
       this.hostPeer = rec;
       const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
@@ -412,6 +417,7 @@ class Net {
       await pc.setLocalDescription(answer);
       await this.waitIce(pc);
       await this.api('answer', { code: room, token: this.token, slot: this.slot, answer: this.desc(pc) });
+      this.progress = 0.68; this.statusMessage = '正在等待房主确认连接…';
       clearTimeout(this.connectTimer);
       this.connectTimer = setTimeout(() => {
         if (this.status !== 'connected') this.fail('P2P 连接失败（网络可能限制 P2P，请换 Wi-Fi 或热点重试）');
@@ -460,6 +466,17 @@ class Net {
         g.weather = msg.weather;
         g.rainTarget = msg.rain;
         break;
+      case 'mode':
+        if (msg.mode === 'creative' || msg.mode === 'survival') {
+          g.mode = msg.mode;
+          if (g.player) g.player.flying = false;
+          g.ui.message('房主切换了游戏模式：' + (g.mode === 'creative' ? '创造模式' : '生存模式'), '#55FFFF');
+        }
+        break;
+      case 'rules':
+        g.rules = Object.assign({}, g.rules, msg.rules || {});
+        g.ui.message('房主更新了游戏规则', '#55FFFF');
+        break;
       case 'respawn':
         g.player.pos = msg.pos.slice();
         g.player.vel = [0, 0, 0];
@@ -476,7 +493,8 @@ class Net {
   }
   onInit(meta, totalEdits) {
     const g = this.game;
-    g.ui.open(new LoadingScreen(g, '正在同步房主的世界…（0/' + (totalEdits || 0) + '）'));
+    this.progress = 0.72; this.statusMessage = '正在同步房主的世界…（0/' + (totalEdits || 0) + '）';
+    g.ui.open(new LoadingScreen(g, this.statusMessage));
     g.worldMeta = {
       id: 'mp-' + this.room, name: meta.name || '联机世界', seed: meta.seed, mode: meta.mode,
       opts: { type: 'default', structures: true }, flat: false, time: meta.time || 1000,
@@ -497,7 +515,7 @@ class Net {
     const p = g.player = new Player(g, sp[0] + 0.5, sp[1], sp[2] + 0.5);
     p.spawn = sp;
     p.needsGround = true;
-    if (g.mode === 'creative') g.giveCreativeKit();
+    // 游客默认空物品栏，不再发放创造模式初始物品；由房主/服务器自行发放
     g.pendingMobs = [];
     if (g.mods && meta.mods) g.mods.applyHostMods(meta.mods, meta.modPayloads || []);
     g.dirtySaved = new Set();
@@ -509,12 +527,14 @@ class Net {
     const g = this.game;
     g._initEditTotal = msg.total || g._initEditTotal;
     g._initEditGot = msg.got || (g._initEditGot + (msg.list || []).length);
+    this.progress = 0.72 + 0.2 * Math.min(1, g._initEditGot / Math.max(1, g._initEditTotal));
+    this.statusMessage = '正在同步房主的世界…（' + g._initEditGot + '/' + g._initEditTotal + '）';
     for (const e of msg.list || []) {
       try {
         g.world.savedChunks.set(ckey(e.cx, e.cz), { v: e.v || 0, b: netU16FromB64(e.b), m: netU16FromB64(e.m) });
       } catch (err) { console.warn('[net] bad chunk', err); }
     }
-    if (g.ui.screen && g.ui.screen instanceof LoadingScreen) g.ui.screen.text = '正在同步房主的世界…（' + g._initEditGot + '/' + g._initEditTotal + '）';
+    if (g.ui.screen && g.ui.screen instanceof LoadingScreen) g.ui.screen.text = this.statusMessage;
     if (g._initEditGot >= g._initEditTotal) this.finishInit();
   }
   finishInit() {
@@ -523,6 +543,7 @@ class Net {
     g._initFinished = true;
     g._lastCC = null;
     g.genQueue = [];
+    this.progress = 0.92; this.statusMessage = '正在生成地形…';
     g.state = 'loading';
     g.loadStart = performance.now();
     g._loadTimeout = setTimeout(() => {

@@ -60,20 +60,33 @@ class TitleScreen extends MenuScreen {
 class LoadingScreen extends MenuScreen {
   constructor(game, text) { super(game, null); this.text = text; this.bgDirt = true; this.pauses = false; }
   drawExtra(ui) {
-    const c = ui.ctx, g = this.game;
-    const msg = g.state === 'loading' ? '正在生成地形…' : this.text;
-    Font.center(c, msg, ui.w / 2, ui.h / 2 - 20, '#FFFFFF');
-    const p = g.loadProgress || 0, bw = 182, bx = Math.floor(ui.w / 2 - bw / 2), by = Math.floor(ui.h / 2);
-    c.fillStyle = '#808080'; c.fillRect(bx, by, bw, 3);
-    c.fillStyle = '#80FF80'; c.fillRect(bx, by, Math.floor(bw * p), 3);
-    Font.center(c, `区块: ${g.world ? g.world.chunks.size : 0}`, ui.w / 2, by + 10, '#A0A0A0');
+    const c = ui.ctx, g = this.game, net = g.net;
+    let p = g.loadProgress || 0;
+    let msg = g.state === 'loading' ? '正在生成地形…' : this.text;
+    if (net && net.progress > 0) {
+      p = Math.max(p, net.progress);
+      if (net.statusMessage && (net.status !== 'off' && net.status !== 'waiting')) msg = net.statusMessage;
+    }
+    if (net && net.status === 'waiting') msg = '房间已创建，等待玩家加入…';
+    p = clamp(p, 0, 1);
+    Font.center(c, msg, ui.w / 2, ui.h / 2 - 24, '#FFFFFF');
+    const bw = 182, bx = Math.floor(ui.w / 2 - bw / 2), by = Math.floor(ui.h / 2);
+    c.fillStyle = '#808080'; c.fillRect(bx, by, bw, 5);
+    c.fillStyle = '#80FF80'; c.fillRect(bx, by, Math.floor(bw * p), 5);
+    // 流动高光，避免看起来完全卡住
+    const stripe = ((performance.now() / 900) % 1) * (bw + 40) - 40;
+    const sx = Math.max(0, Math.min(bw - 1, stripe)), sw = Math.max(0, Math.min(32, bw - sx));
+    c.fillStyle = 'rgba(255,255,255,0.35)';
+    c.fillRect(bx + sx, by, sw, 5);
+    Font.center(c, Math.round(p * 100) + '%   区块: ' + (g.world ? g.world.chunks.size : 0), ui.w / 2, by + 12, '#A0A0A0');
+    if (net && net.status === 'connecting') Font.center(c, '如果长时间无响应，请检查房间号/HTTPS/P2P 网络', ui.w / 2, by + 26, '#FFAA00');
   }
 }
 
 class WorldListScreen extends MenuScreen {
   constructor(game) { super(game, '选择世界'); this.bgDirt = true; this.worlds = null; this.sel = -1; this.scroll = 0; DB.listWorlds().then(w => { this.worlds = w; this.layout(); }); }
   layout() {
-    const u = this.game.ui, cx = u.w / 2, by = u.h - 76;
+    const u = this.game.ui, cx = u.w / 2, by = u.h - 124;
     const has = this.sel >= 0 && this.worlds && this.worlds[this.sel];
     this.widgets = [
       { x: cx - 154, y: by, w: 150, h: 20, label: '进入选中的世界', enabled: !!has, onClick: () => this.play() },
@@ -82,10 +95,28 @@ class WorldListScreen extends MenuScreen {
       { x: cx - 78, y: by + 24, w: 72, h: 20, label: '重命名', enabled: !!has, onClick: () => this.rename() },
       { x: cx - 154, y: by + 48, w: 150, h: 20, label: '开放联机…', enabled: !!has, onClick: () => this.game.ui.open(new LanScreen(this.game, this, this.worlds[this.sel])) },
       { x: cx + 4, y: by + 24, w: 150, h: 20, label: '取消', onClick: () => this.game.ui.open(new TitleScreen(this.game)) },
+      { x: cx - 154, y: by + 72, w: 150, h: 20, label: '导出选中', enabled: !!has, onClick: () => this.exportSel() },
+      { x: cx + 4, y: by + 72, w: 150, h: 20, label: '导入存档', onClick: () => this.importFile() },
     ];
     this.listY = 36; this.listH = by - 8 - 36; this.titleY = 16;
   }
   play() { const w = this.worlds[this.sel]; if (w) this.game.loadWorld(w.id); }
+  exportSel() {
+    const w = this.worlds[this.sel];
+    if (!w) { this.game.ui.message('请先选中一个世界', '#FF5555'); return; }
+    this.game.exportWorldFile(w.id);
+  }
+  importFile() {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = '.json,application/json';
+    input.onchange = async () => {
+      const f = input.files && input.files[0];
+      if (!f) return;
+      const id = await this.game.importWorldFile(f);
+      if (id) { this.worlds = await DB.listWorlds(); this.sel = -1; this.layout(); }
+    };
+    input.click();
+  }
   async del() {
     const w = this.worlds[this.sel]; if (!w) return;
     if (this.confirmDel !== w.id) { this.confirmDel = w.id; this.game.ui.message(`再次点击“删除”以确认删除 “${w.name}”`, '#FF5555'); this.widgets[2].label = '确认删除？'; return; }
@@ -204,35 +235,40 @@ class MultiplayerScreen extends MenuScreen {
     let n = '';
     try { n = localStorage.getItem('mcjs-name') || ''; } catch (e) { }
     this.name = n || ('玩家' + (100 + Math.floor(Math.random() * 900)));
-    this.ip = 'users.66ghz.com.MC2.';
+    this.addr = '';
     this.max = 8;
     this.busy = false;
     this.field = 0;
+    this.lastError = (game.net && game.net.error) || '';
   }
   layout() {
     const u = this.game.ui, cx = u.w / 2;
-    this.nameField = { x: cx - 154, y: 38, w: 308, h: 20 };
-    this.ipField = { x: cx - 154, y: 72, w: 308, h: 20 };
+    this.nameField = { x: cx - 154, y: 34, w: 308, h: 20 };
+    this.addrField = { x: cx - 154, y: 62, w: 308, h: 20 };
+    this.createPanel = { x: cx - 154, y: 90, w: 150, h: 58 };
+    this.joinPanel = { x: cx + 4, y: 90, w: 150, h: 58 };
+    const by = u.h - 26;
     this.widgets = [
-      { x: cx - 154, y: 96, w: 150, h: 20, label: () => this.busy ? '请稍候…' : '创建房间（房主）', enabled: !this.busy, onClick: () => this.host() },
-      { x: cx + 4, y: 96, w: 150, h: 20, label: () => this.busy ? '请稍候…' : '加入服务器（游客）', enabled: !this.busy, onClick: () => this.join() },
-      { x: cx - 154, y: 122, w: 30, h: 20, label: '−', enabled: !this.busy, onClick: () => this.setMax(-1) },
-      { x: cx - 122, y: 122, w: 140, h: 20, label: () => '房间人数：' + this.max + ' 人', enabled: false, onClick: () => { } },
-      { x: cx + 20, y: 122, w: 30, h: 20, label: '+', enabled: !this.busy, onClick: () => this.setMax(1) },
-      { x: cx + 54, y: 122, w: 100, h: 20, label: '模组…', onClick: () => this.game.ui.open(new ModsScreen(this.game, this)) },
-      { x: cx - 154, y: u.h - 28, w: 150, h: 20, label: '返回', onClick: () => this.game.ui.open(new TitleScreen(this.game)) },
-      { x: cx + 4, y: u.h - 28, w: 150, h: 20, label: '粘贴IP', onClick: () => this.paste() },
+      { x: cx - 150, y: 116, w: 142, h: 20, label: () => this.busy ? '请稍候…' : '创建房间（房主）', enabled: !this.busy, onClick: () => this.host() },
+      { x: cx + 8, y: 116, w: 142, h: 20, label: () => this.busy ? '请稍候…' : '加入房间（游客）', enabled: !this.busy, onClick: () => this.join() },
+      { x: cx - 154, y: 156, w: 30, h: 20, label: '−', enabled: !this.busy, onClick: () => this.setMax(-1) },
+      { x: cx - 122, y: 156, w: 140, h: 20, label: () => '房间人数：' + this.max + ' 人', enabled: false, onClick: () => { } },
+      { x: cx + 20, y: 156, w: 30, h: 20, label: '+', enabled: !this.busy, onClick: () => this.setMax(1) },
+      { x: cx + 54, y: 156, w: 100, h: 20, label: '模组…', onClick: () => this.game.ui.open(new ModsScreen(this.game, this)) },
+      { x: cx - 154, y: by, w: 100, h: 20, label: '返回', onClick: () => this.game.ui.open(new TitleScreen(this.game)) },
+      { x: cx - 50, y: by, w: 100, h: 20, label: '粘贴地址', onClick: () => this.paste() },
+      { x: cx + 54, y: by, w: 100, h: 20, label: () => this.game.net && this.game.net.room ? '复制房间码' : '默认地址', onClick: () => this.copyOrDefault() },
     ];
     this.focus(this.field);
   }
   setMax(d) { this.max = Math.max(2, Math.min(20, this.max + d)); this.layout(); }
   focus(i) {
     this.field = i;
-    const u = this.game.ui, f = i === 0 ? this.nameField : this.ipField;
-    u.showInput(f.x + 4, f.y + 2, f.w - 8, f.h - 4, i === 0 ? this.name : this.ip, () => { if (i === 0) this.focus(1); else this.join(); }, {
+    const u = this.game.ui, f = i === 0 ? this.nameField : this.addrField;
+    u.showInput(f.x + 4, f.y + 2, f.w - 8, f.h - 4, i === 0 ? this.name : this.addr, () => { if (i === 0) this.focus(1); else this.join(); }, {
       onInput: (v) => {
         if (i === 0) { this.name = v.slice(0, 16); try { localStorage.setItem('mcjs-name', this.name); } catch (e) { } }
-        else this.ip = v.slice(0, 120);
+        else this.addr = v.slice(0, 120);
       },
       onEsc: () => u.open(new TitleScreen(this.game)), max: i === 0 ? 16 : 120,
     });
@@ -244,41 +280,57 @@ class MultiplayerScreen extends MenuScreen {
   }
   join() {
     if (!this.name.trim()) { this.game.ui.message('请先填写玩家名', '#FF5555'); this.focus(0); return; }
-    const ip = this.ip.trim();
-    if (!ip) { this.game.ui.message('请输入服务器IP', '#FF5555'); return; }
+    const addr = this.addr.trim();
+    if (!addr) { this.game.ui.message('请输入房间号或完整地址', '#FF5555'); this.focus(1); return; }
+    const code = (typeof extractRoomCode === 'function' ? extractRoomCode(addr) : '') || addr;
+    if (!code) { this.game.ui.message('无法识别房间号', '#FF5555'); return; }
     this.busy = true; this.game.ui.hideInput();
-    this.game.startJoining(ip, this.name.trim());
+    this.game.startJoining(code, this.name.trim());
   }
   async paste() {
     try {
       const t = await navigator.clipboard.readText();
-      if (t) { this.ip = t.trim(); this.focus(1); }
-    } catch (e) { this.game.ui.message('无法读取剪贴板，请手动输入IP', '#FF5555'); }
+      if (t) { this.addr = t.trim(); this.focus(1); }
+    } catch (e) { this.game.ui.message('无法读取剪贴板，请手动输入', '#FF5555'); }
+  }
+  copyOrDefault() {
+    const net = this.game.net;
+    if (net && net.room) {
+      const addr = 'users.66ghz.com.MC2.' + net.room;
+      try { navigator.clipboard.writeText(addr); this.game.ui.message('已复制：' + addr, '#55FF55'); }
+      catch (e) { this.game.ui.message('房间码：' + net.room, '#FFFF55'); }
+      return;
+    }
+    this.addr = 'users.66ghz.com.MC2.';
+    this.focus(1);
+    this.game.ui.message('已填入默认服务器前缀，请补房间号', '#55FFFF');
   }
   drawExtra(ui) {
-    const c = ui.ctx;
+    const c = ui.ctx, cx = ui.w / 2;
     Font.draw(c, '玩家名', this.nameField.x, this.nameField.y - 10, '#A0A0A0');
-    Font.draw(c, '服务器IP（格式：users.66ghz.com.MC2.房间号）', this.ipField.x, this.ipField.y - 10, '#A0A0A0');
+    Font.draw(c, '房间号 / 服务器地址（如 ABC123 或 users.66ghz.com.MC2.ABC123）', this.addrField.x, this.addrField.y - 10, '#A0A0A0');
     ui.nine(this.field === 0 ? 'text_field_hl' : 'text_field', this.nameField.x, this.nameField.y, this.nameField.w, this.nameField.h, 1);
-    ui.nine(this.field === 1 ? 'text_field_hl' : 'text_field', this.ipField.x, this.ipField.y, this.ipField.w, this.ipField.h, 1);
-    Font.center(c, '房主：创建房间后会显示加入IP，房主默认 OP', ui.w / 2, 152, '#AAAAAA');
-    Font.center(c, '游客：输入完整IP或直接输入房间号加入', ui.w / 2, 164, '#AAAAAA');
-    Font.center(c, '需要 HTTPS 与支持 WebRTC 的浏览器', ui.w / 2, 176, '#808080');
+    ui.nine(this.field === 1 ? 'text_field_hl' : 'text_field', this.addrField.x, this.addrField.y, this.addrField.w, this.addrField.h, 1);
+    // panels
+    c.fillStyle = 'rgba(0,0,0,0.28)'; c.fillRect(this.createPanel.x, this.createPanel.y, this.createPanel.w, this.createPanel.h);
+    c.fillStyle = 'rgba(0,0,0,0.28)'; c.fillRect(this.joinPanel.x, this.joinPanel.y, this.joinPanel.w, this.joinPanel.h);
+    Font.center(c, '房主', this.createPanel.x + this.createPanel.w / 2, this.createPanel.y + 6, '#55FF55');
+    Font.center(c, '创建后显示房间码', this.createPanel.x + this.createPanel.w / 2, this.createPanel.y + 20, '#A0A0A0');
+    Font.center(c, '游客', this.joinPanel.x + this.joinPanel.w / 2, this.joinPanel.y + 6, '#55FFFF');
+    Font.center(c, '输入房间号即可加入', this.joinPanel.x + this.joinPanel.w / 2, this.joinPanel.y + 20, '#A0A0A0');
+    Font.center(c, '房主默认 OP；游客默认空物品栏，由房主决定给什么', cx, 182, '#AAAAAA');
+    const net = this.game.net;
+    if (net && net.room) Font.center(c, '当前房间：' + net.room + '  ·  ' + net.status, cx, 196, '#FFFF55');
+    else if (this.lastError) Font.center(c, '上次错误：' + this.lastError.slice(0, 60), cx, 196, '#FF5555');
+    else Font.center(c, '需要 HTTPS 与支持 WebRTC 的浏览器（Chrome/Edge）', cx, 196, '#808080');
   }
   mouseDown(ui, mx, my, b) {
     if (ui.hit(this.nameField, mx, my)) { this.focus(0); return; }
-    if (ui.hit(this.ipField, mx, my)) { this.focus(1); return; }
+    if (ui.hit(this.addrField, mx, my)) { this.focus(1); return; }
     super.mouseDown(ui, mx, my, b);
   }
   onEsc() { this.game.ui.open(new TitleScreen(this.game)); }
 }
-
-const GRAPHICS_PRESETS = [
-  { name: '流畅', res: 0.5, dist: 4, clouds: false, particles: 0.4 },
-  { name: '均衡', res: 0.75, dist: 8, clouds: true, particles: 0.7 },
-  { name: '高清', res: 1, dist: 10, clouds: true, particles: 1 },
-  { name: '极致', res: 1, dist: 14, clouds: true, particles: 1 },
-];
 
 class RulesScreen extends MenuScreen {
   constructor(game, parent, target) {
@@ -519,7 +571,7 @@ class HelpScreen extends MenuScreen {
   onEsc() { this.game.ui.open(this.parent); }
 }
 const HELP_PAGES = [
-  { title: '基本操作', lines: ['W A S D|移动', '空格|跳跃 / 游泳上浮 / (创造) 双击切换飞行', '左 Shift|潜行（不会从边缘掉落）/ 飞行下降', '左 Ctrl 或 双击 W|疾跑', '鼠标移动|转动视角', '鼠标左键|挖掘方块 / 攻击生物（按住持续挖掘）', '鼠标右键|放置方块 / 使用物品 / 打开容器 / 吃东西 / 拉弓', '鼠标中键|选取方块', '滚轮 / 1-9|切换快捷栏', 'E|打开物品栏', 'Q|丢弃物品 (Ctrl+Q 丢弃一组)', 'F1 / F3 / F5|隐藏界面 / 调试信息 / 切换视角', 'F3 + B / F3 + G|显示碰撞箱 / 区块边界', 'F3 + Esc|暂停游戏并保留调试屏', 'T 或 /|打开聊天与命令', 'Esc|游戏菜单（暂停）', '多人游戏|标题屏幕 → 多人游戏，创建或输入 6 位房间码'] },
+  { title: '基本操作', lines: ['W A S D|移动', '空格|跳跃 / 游泳上浮 / (创造) 双击切换飞行', '左 Shift|潜行（不会从边缘掉落）/ 飞行下降', '左 Ctrl 或 双击 W|疾跑', '鼠标移动|转动视角', '鼠标左键|挖掘方块 / 攻击生物（按住持续挖掘）', '鼠标右键|放置方块 / 使用物品 / 打开容器 / 吃东西 / 拉弓', '鼠标中键|选取方块', '滚轮 / 1-9|切换快捷栏', 'E|打开物品栏', 'Q|丢弃物品 (Ctrl+Q 丢弃一组)', 'F1 / F3 / F5|隐藏界面 / 调试信息 / 切换视角', 'F3 + B / F3 + G|显示碰撞箱 / 区块边界', 'F3 + Esc|暂停/继续游戏并保留调试屏', 'F3 + F4|快速切换创造/生存模式', 'F3 + T|重载数据包与模组', 'T 或 /|打开聊天与命令', 'Esc|游戏菜单（暂停）', '多人游戏|标题屏幕 → 多人游戏，创建或输入 6 位房间码'] },
   { title: '物品栏操作', lines: ['左键|拿起 / 放下整组物品', '右键|拿起一半 / 放下一个', 'Shift + 左键|快速移动物品', '按住左键拖动|在多个格子之间平均分配', '按住右键拖动|每个格子放一个', '双击|收集同类物品', '悬停 + 数字键|与快捷栏交换', '悬停 + Q|丢弃物品', '', '创造模式物品栏：点击顶部标签切换分类，', '滚轮滚动；最后一个标签可以搜索物品。', '把物品放到右下角的 X 格可以删除。'] },
   { title: '生存入门', lines: ['1. 徒手撸树获得原木，合成木板（在物品栏 2x2 合成格）', '2. 4 个木板合成工作台，右键打开 3x3 合成', '3. 木板竖放 2 个合成木棍，制作木镐', '4. 挖石头获得圆石，制作石镐、熔炉', '5. 煤炭 + 木棍合成火把，照亮洞穴防止怪物生成', '6. 用熔炉把粗铁冶炼成铁锭，制作铁镐与铁甲', '7. 铁镐可以挖掘钻石矿（在 Y<16 的深层）', '', '饥饿值不足时无法疾跑、不能回血，记得吃东西！', '夜晚会生成僵尸、骷髅、苦力怕和蜘蛛。', '摔落、溺水、岩浆、仙人掌都会造成伤害。', '按 Esc → 进度 查看你的成就目标。'] },
   { title: '常用配方', lines: ['工作台|4 木板 (2x2)', '木棍|2 木板竖放', '镐|上排 3 材料 + 中间竖放 2 木棍', '斧 / 锹 / 剑 / 锄|同原版摆法', '熔炉|8 圆石围一圈', '箱子|8 木板围一圈', '火把|煤炭/木炭 在 木棍 上方', '面包|3 小麦横排', 'TNT|火药与沙子交错 (5 火药 + 4 沙子)', '床|3 羊毛 + 3 木板，夜晚右键睡觉跳过黑夜', '弓 / 箭|木棍+线 / 燧石+木棍+羽毛', '桶|3 铁锭 V 形；可装水和熔岩', '盔甲|皮革/铁/钻石，同原版摆法', '其他: 楼梯、台阶、门、梯子、书架、砖块…'] },
@@ -640,12 +692,18 @@ function runCommand(g, text) {
   }
   const [cmd, ...a] = text.slice(1).split(/\s+/);
   const modCmd = g.mods && g.mods.commands.get(cmd);
-  // 模组可以把命令声明为 permission:'all'，这样游客也能用
-  if ((!modCmd || modCmd.permission !== 'all') && !g.commandsAllowed()) {
-    const guest = g.net && g.net.inGame && g.net.inGame() && g.net.role === 'guest';
-    ui.message(guest ? '游客没有使用指令的权限（只有房主可以使用）' : '此世界未开启作弊，请在创建世界时勾选“允许作弊”', '#FF5555');
+  const guest = !!(g.net && g.net.inGame && g.net.inGame() && g.net.role === 'guest');
+  // 原版指令需要作弊；模组指令在单机/房主端不强制要求作弊，游客端只允许 permission:'all'
+  if (!modCmd) {
+    if (!g.commandsAllowed()) {
+      ui.message(guest ? '游客没有使用原版指令的权限（只有房主可以使用）' : '此世界未开启作弊，请在创建世界时勾选“允许作弊”', '#FF5555');
+      return;
+    }
+  } else if (guest && modCmd.permission !== 'all') {
+    errGuest();
     return;
   }
+  function errGuest() { ui.message('这个模组指令只允许房主/管理员使用', '#FF5555'); }
   const err = (m) => ui.message(m, '#FF5555');
   if (g.mods) {
     const ev = { command: cmd, args: a, text: text, cancel: false };
@@ -742,6 +800,7 @@ Game.prototype.setMode = function (m) {
   const p = this.player;
   if (m === 'survival') { p.flying = false; }
   this.ui.message('游戏模式已更新为' + (m === 'creative' ? '创造模式' : '生存模式'), '#AAAAAA');
+  if (this.net && this.net.role === 'host' && this.net.status !== 'off') this.net.broadcast({ type: 'mode', mode: m });
 };
 
 function toggleFullscreen() {

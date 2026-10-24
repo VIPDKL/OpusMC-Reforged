@@ -343,13 +343,24 @@ function check_captcha($captcha)
     fail('请完成人机验证', 403);
 }
 
+function reserved_mod_name($s)
+{
+    $s = strtolower(trim((string)$s));
+    $reserved = array('admin', 'administrator', 'developer', 'dev', 'system', 'sys', 'root', 'owner', 'staff', 'moderator', 'mod', 'operator', 'op', 'server', 'official', 'mojang', 'microsoft', '管理员', '开发者', '系统', '服主', '腐竹', '官方', '客服', '管理', '超级管理员');
+    return in_array($s, $reserved, true);
+}
+function valid_category($c)
+{
+    return in_array($c, array('adventure', 'building', 'technology', 'magic', 'tools', 'survival', 'worldgen', 'decoration', 'optimization', 'other'), true) ? $c : 'other';
+}
+
 function public_meta($m)
 {
     $d = array(
         'id' => '', 'name' => '', 'author' => '', 'version' => '', 'summary' => '',
         'description' => '', 'side' => 'both', 'tags' => array(), 'size' => 0,
         'downloads' => 0, 'createdAt' => 0, 'updatedAt' => 0, 'installable' => true,
-        'icon' => '', 'homepage' => '', 'license' => '', 'mcVersion' => '', 'sha256' => '',
+        'icon' => '', 'homepage' => '', 'license' => '', 'mcVersion' => '', 'sha256' => '', 'category' => 'other',
     );
     $m = array_merge($d, is_array($m) ? $m : array());
     return array(
@@ -359,7 +370,7 @@ function public_meta($m)
         'size' => $m['size'], 'downloads' => $m['downloads'], 'createdAt' => $m['createdAt'],
         'updatedAt' => $m['updatedAt'], 'installable' => $m['installable'],
         'icon' => $m['icon'], 'homepage' => $m['homepage'], 'license' => $m['license'],
-        'mcVersion' => $m['mcVersion'], 'sha256' => $m['sha256'],
+        'mcVersion' => $m['mcVersion'], 'sha256' => $m['sha256'], 'category' => $m['category'],
     );
 }
 function validate_icon($icon)
@@ -420,12 +431,14 @@ switch ($action) {
         rate_limit('list', (int)cfg('list_per_minute', 180), 60);
         $q = isset($_GET['q']) ? clean_text((string)$_GET['q'], '搜索词', 0, 64) : '';
         $sort = isset($_GET['sort']) ? (string)$_GET['sort'] : 'new';
+        $category = isset($_GET['category']) ? (string)$_GET['category'] : '';
         $page = max(1, min(10000, isset($_GET['page']) ? (int)$_GET['page'] : 1));
         $limit = max(1, min(50, isset($_GET['limit']) ? (int)$_GET['limit'] : 20));
         $idx = read_index();
         $out = array();
         foreach ($idx as $m) {
             if (!is_array($m) || !isset($m['id'])) continue;
+            if ($category !== '' && $category !== 'all' && (!isset($m['category']) || $m['category'] !== $category)) continue;
             if ($q !== '') {
                 $hay = strtolower($m['name'] . ' ' . $m['author'] . ' ' . $m['summary'] . ' ' . implode(' ', (array)$m['tags']));
                 if (strpos($hay, strtolower($q)) === false) continue;
@@ -494,7 +507,10 @@ switch ($action) {
         $name = clean_text(isset($in['name']) ? $in['name'] : '', '模组名称', 1, 40);
         $author = clean_text(isset($in['author']) ? $in['author'] : '', '作者', 1, 32);
         $version = clean_text(isset($in['version']) ? $in['version'] : '1.0.0', '版本号', 1, 20);
+        if (reserved_mod_name($name)) fail('“' . $name . '”是系统保留名，不能用作模组名');
+        if (reserved_mod_name($author)) fail('“' . $author . '”是系统保留名，不能用作作者名');
         $summary = clean_text(isset($in['summary']) ? $in['summary'] : '', '简介', 1, 200);
+        $category = valid_category(isset($in['category']) ? (string)$in['category'] : 'other');
         $description = isset($in['description']) ? clean_text($in['description'], '详细说明', 0, 4000, true) : '';
         $side = isset($in['side']) ? (string)$in['side'] : 'both';
         if (!in_array($side, array('client', 'server', 'both'), true)) $side = 'both';
@@ -525,7 +541,7 @@ switch ($action) {
         if (!preg_match('//u', $code)) fail('模组代码必须是 UTF-8');
         $sha = hash('sha256', $code);
 
-        $result = with_index(true, function ($idx) use ($name, $author, $version, $summary, $description, $side, $tags, $installable, $icon, $homepage, $license, $mcVersion, $code, $sha, $codeLen) {
+        $result = with_index(true, function ($idx) use ($name, $author, $version, $summary, $description, $side, $tags, $installable, $icon, $homepage, $license, $mcVersion, $code, $sha, $codeLen, $category) {
             if (count($idx) >= (int)cfg('max_mods', 500)) fail('模组库已满，请联系管理员', 503);
             $total = 0;
             foreach ($idx as $m) {
@@ -546,7 +562,7 @@ switch ($action) {
                 'tags' => $tags, 'size' => $codeLen, 'sha256' => $sha, 'downloads' => 0,
                 'createdAt' => $now, 'updatedAt' => $now, 'installable' => $installable,
                 'icon' => $icon, 'homepage' => $homepage, 'license' => $license,
-                'mcVersion' => $mcVersion, 'source' => 'public',
+                'mcVersion' => $mcVersion, 'source' => 'public', 'category' => $category,
             );
             $file = mod_path($id);
             $tmp = $file . '.tmp.' . getmypid();

@@ -15,6 +15,23 @@ const OFFICIAL_FALLBACK = [
     description: '按 M 打开模组列表，显示名称/作者/版本/类型/配置。', file: 'mod-info.js', official: true },
 ];
 
+const MOD_CATEGORIES = [
+  { id: 'all', name: '全部' },
+  { id: 'adventure', name: '冒险' },
+  { id: 'building', name: '建筑' },
+  { id: 'technology', name: '科技' },
+  { id: 'magic', name: '魔法' },
+  { id: 'tools', name: '工具' },
+  { id: 'survival', name: '生存' },
+  { id: 'worldgen', name: '世界生成' },
+  { id: 'decoration', name: '装饰' },
+  { id: 'optimization', name: '优化' },
+  { id: 'other', name: '其他' },
+];
+const MOD_RESERVED_NAME_RE = /^(admin|administrator|developer|dev|system|sys|root|owner|staff|moderator|mod|operator|op|server|official|mojang|microsoft|管理员|开发者|系统|服主|腐竹|官方|客服|管理|超级管理员)$/i;
+function isReservedModName(name) { return MOD_RESERVED_NAME_RE.test(String(name || '').trim()); }
+function modCategoryName(id) { const c = MOD_CATEGORIES.find(x => x.id === id); return c ? c.name : '其他'; }
+
 const MOD_SIDES = {
   client: { label: '客户端', color: '#55FFFF', desc: '仅本机生效，可改渲染/世界生成/菜单' },
   server: { label: '服务端', color: '#FFAA00', desc: '仅房主/联机生效，权限受限' },
@@ -238,6 +255,12 @@ class ModManager {
       sendMessage(text, color) { g.ui.message(String(text), color); },
       get held() { const h = P().inv.held; return h ? { key: ITEMS[h.id] ? ITEMS[h.id].key : '?', count: h.count, dmg: h.dmg || 0 } : null; },
       selectSlot(i) { if (i >= 0 && i <= 8) P().inv.sel = i; },
+      clearInventory() { P().inv.slots.fill(null); return true; },
+      remove(key, n) { const id = ITEM_KEY[String(key).replace('minecraft:', '')]; if (id === undefined) return false; P().inv.remove(id, Math.max(1, +n || 1)); return true; },
+      setSlot(i, key, n) { i = +i | 0; if (i < 0 || i > 39) return false; if (key == null) { P().inv.slots[i] = null; return true; } const id = ITEM_KEY[String(key).replace('minecraft:', '')]; if (id === undefined) return false; P().inv.slots[i] = { id: id, count: Math.max(1, +n || 1), dmg: 0 }; return true; },
+      getSlot(i) { const s = P().inv.slots[+i | 0]; return s ? { key: ITEMS[s.id] ? ITEMS[s.id].key : '?', count: s.count, dmg: s.dmg || 0 } : null; },
+      raycast(range) { const r = g.raycast([P().pos[0], P().pos[1] + P().eye(), P().pos[2]], g.lookDir(), range || g.reach(), true); return r ? { id: r.id, pos: r.pos.slice(), face: r.face } : null; },
+      playSound(name) { try { if (Sound[name]) Sound[name](P().pos); } catch (e) { } },
       dropSelected() {
         const p = P(), h = p.inv.held;
         if (!h) return false;
@@ -255,13 +278,31 @@ class ModManager {
       get weather() { return g.weather; },
       getBlock(x, y, z) { return g.world.getBlock(x, y, z); },
       getBlockKey(x, y, z) { const b = BLOCKS[g.world.getBlock(x, y, z)]; return b ? b.key : null; },
-      setBlock(x, y, z, key, meta) {
+      setBlock(x, y, z, key, meta, noFlush) {
         const id = typeof key === 'number' ? key : BID[String(key).replace('minecraft:', '')];
         if (id === undefined || !BLOCKS[id]) return false;
         const ok = g.world.setBlock(+x, +y, +z, id, meta || 0, 1);
-        if (ok) g.flushMesh(+x, +y, +z);
+        if (ok && !noFlush) g.flushMesh(+x, +y, +z);
         return ok;
       },
+      fill(x1, y1, z1, x2, y2, z2, key, meta) {
+        const id = typeof key === 'number' ? key : BID[String(key).replace('minecraft:', '')];
+        if (id === undefined || !BLOCKS[id]) return 0;
+        const ax = Math.min(x1, x2) | 0, ay = Math.min(y1, y2) | 0, az = Math.min(z1, z2) | 0;
+        const bx = Math.max(x1, x2) | 0, by = Math.max(y1, y2) | 0, bz = Math.max(z1, z2) | 0;
+        if ((bx - ax + 1) * (by - ay + 1) * (bz - az + 1) > 32768) throw new Error('fill 体积超过 32768');
+        let n = 0; for (let y = ay; y <= by; y++) for (let z = az; z <= bz; z++) for (let x = ax; x <= bx; x++) if (g.world.setBlock(x, y, z, id, meta || 0, 1)) n++;
+        g.flushMesh((ax + bx) >> 1, (ay + by) >> 1, (az + bz) >> 1);
+        return n;
+      },
+      setBlockBatch(list) {
+        if (!Array.isArray(list) || list.length > 4096) throw new Error('批量最多 4096 个方块');
+        let n = 0; for (const b of list) { if (!b) continue; const id = typeof b.id === 'number' ? b.id : BID[String(b.id).replace('minecraft:', '')]; if (id !== undefined && BLOCKS[id] && g.world.setBlock(+b.x, +b.y, +b.z, id, b.meta || 0, 1)) n++; }
+        g.flushMesh(); return n;
+      },
+      getHeight(x, z) { return g.world.surfaceY(x | 0, z | 0); },
+      raycast(x, y, z, dx, dy, dz, range) { const r = g.raycast([x, y, z], [dx, dy, dz], range || 8, true); return r ? { id: r.id, pos: r.pos.slice(), face: r.face } : null; },
+      blockEntities() { return [...g.blockEntities.entries()].map(([k, v]) => ({ key: k, type: v.type, data: v })); },
       setMeta(x, y, z, meta) { return g.world.setMeta(+x, +y, +z, +meta || 0); },
       getMeta(x, y, z) { return g.world.getMeta(x, y, z); },
       getChunk(cx, cz) { return g.world.getChunk(cx, cz); },
@@ -355,6 +396,7 @@ class ModManager {
       items: { get: (k) => ITEMS[ITEM_KEY[k]] || null, id: (k) => ITEM_KEY[k] ?? null, make: (k, n) => makeStack(k, n || 1) },
       entities: { spawn: (type, x, y, z) => { const e = new Mob(g, type, x, y, z); g.addEntity(e); return e; }, all: () => g.entities.filter(e => !e.dead) },
       get config() { return { get: (k, d) => m.getConfig(m._hookModId, k, d), set: (k, v) => m.setConfig(m._hookModId, k, v) }; },
+      settings: { get: (k, d) => g.settings[k] === undefined ? d : g.settings[k], set: (k, v) => { g.settings[k] = v; g.applySettings(); g.saveSettings(); return true; } },
       ui: {
         message: (t, c) => g.ui.message(t, c),
         actionBar: (text, color) => { g.ui.actionBar = { text: text, t: performance.now(), color: color || '#FFFFFF' }; },
@@ -426,6 +468,7 @@ class ModManager {
           slab: !!def.slab, stairs: !!def.stairs, door: !!def.door, trapdoor: !!def.trapdoor, ladder: !!def.ladder,
           stack: def.stack || 64, flatIcon: def.flatIcon || null, onUse: def.onUse || null,
           texFn: typeof def.texFn === 'function' ? def.texFn : null,
+          model: def.model ? (typeof def.model === 'function' ? def.model : () => def.model) : null,
         };
         const b = defModBlock(key, asCn(def.name || def.cn, key), opts);
         if (!b) throw new Error('方块注册失败: ' + key);
@@ -568,6 +611,7 @@ class ModManager {
         if (!g.net || !g.net.sendMod) return false;
         return g.net.sendMod(channel, data);
       },
+      broadcast(channel, data) { return this.send(channel, data); },
       get connected() { return !!(g.net && g.net.status === 'connected'); },
       get isHost() { return !!(g.net && g.net.role === 'host'); },
     };
@@ -627,6 +671,27 @@ class ModManager {
         set: (key, val) => m.setConfig(owner, key, val),
         schema: (schema) => { if (Array.isArray(schema)) mod.configSchema = schema; },
       },
+      settings: {
+        get(key, def) { return g.settings[key] === undefined ? def : g.settings[key]; },
+        set(key, val) {
+          if (typeof key !== 'string' || !key) return false;
+          g.settings[key] = val; g.applySettings(); g.saveSettings();
+          m.fire('settingsChange', { key: key, value: val });
+          return true;
+        },
+        all() { return Object.assign({}, g.settings); },
+        apply() { g.applySettings(); g.saveSettings(); return true; },
+        preset(name) {
+          const presets = {
+            low: { renderDist: 4, resScale: 0.6, graphics: 0, particles: 0.4, clouds: false, shadows: false, bobbing: false },
+            medium: { renderDist: 6, resScale: 0.8, graphics: 1, particles: 0.7, clouds: true, shadows: false, bobbing: true },
+            high: { renderDist: 10, resScale: 1, graphics: 2, particles: 1, clouds: true, shadows: true, bobbing: true },
+          };
+          const p = presets[name]; if (!p) return false;
+          Object.assign(g.settings, p); g.applySettings(); g.saveSettings(); return true;
+        },
+        reset(key) { if (key && key in g.settings) delete g.settings[key]; g.applySettings(); g.saveSettings(); },
+      },
       loot: {
         register(blockKey, fn) {
           if (typeof fn !== 'function') throw new Error('loot.register 需要函数');
@@ -651,7 +716,25 @@ class ModManager {
         onEntityRender: (fn) => m.on('entityRender', fn, owner),
         onChunkMesh: (fn) => m.on('chunkMesh', fn, owner),
         onGameTick: (fn) => m.on('gameTick', fn, owner),
+        onWorldTick: (fn) => m.on('worldTick', fn, owner),
+        onPlayerTick: (fn) => m.on('playerTick', fn, owner),
         onDimensionChange: (fn) => m.on('dimensionChange', fn, owner),
+        onItemUse: (fn) => m.on('itemUse', fn, owner),
+        onBlockInteract: (fn) => m.on('blockInteract', fn, owner),
+        onEntitySpawn: (fn) => m.on('entitySpawn', fn, owner),
+        onPlayerJoin: (fn) => m.on('playerJoin', fn, owner),
+        onPlayerDeath: (fn) => m.on('playerDeath', fn, owner),
+        onPlayerRespawn: (fn) => m.on('playerRespawn', fn, owner),
+        onChat: (fn) => m.on('chat', fn, owner),
+        onCommand: (fn) => m.on('command', fn, owner),
+        onScreenOpen: (fn) => m.on('screenOpen', fn, owner),
+        onWorldLoad: (fn) => m.on('worldLoad', fn, owner),
+        onWorldSave: (fn) => m.on('worldSave', fn, owner),
+        onChunkLoad: (fn) => m.on('chunkLoad', fn, owner),
+        onCraft: (fn) => m.on('craft', fn, owner),
+        onPickup: (fn) => m.on('itemPickup', fn, owner),
+        onMobKilled: (fn) => m.on('mobKilled', fn, owner),
+        onSettingsChange: (fn) => m.on('settingsChange', fn, owner),
       };
       api.setTitle = (text) => { g.customTitle = String(text); };
       api.addTitleButton = (label, onClick) => {
@@ -683,7 +766,16 @@ class ModManager {
       api.game = null;
       api.renderer = null;
       api.isClient = false;
-      api.hooks = { onGameTick: (fn) => m.on('gameTick', fn, owner) };
+      api.hooks = {
+        onGameTick: (fn) => m.on('gameTick', fn, owner),
+        onWorldTick: (fn) => m.on('worldTick', fn, owner),
+        onPlayerTick: (fn) => m.on('playerTick', fn, owner),
+        onPlayerJoin: (fn) => m.on('playerJoin', fn, owner),
+        onPlayerDeath: (fn) => m.on('playerDeath', fn, owner),
+        onChat: (fn) => m.on('chat', fn, owner),
+        onCommand: (fn) => m.on('command', fn, owner),
+        onWorldSave: (fn) => m.on('worldSave', fn, owner),
+      };
       api.setTitle = () => {};
       api.addTitleButton = () => {};
       api.registerDimension = () => {};
@@ -696,8 +788,40 @@ class ModManager {
         players: () => m.netPlayers(),
         broadcast: (text, color) => m.serverBroadcast(text, color),
         kick: (slot, reason) => m.serverKick(slot, reason),
+        setRules: (rules) => m.serverSetRules(rules),
+        setTime: (t) => api.world.setTime(t),
+        setWeather: (rain) => api.world.setWeather(rain),
         runCommand: (text) => { try { runCommand(g, text); return true; } catch (e) { return false; } },
       };
+    }
+    api.registerCommand = (name, def) => commands.register(name, def);
+    api.registerKeybind = (def) => keybinds.register(def);
+    api.registerEvent = (name, fn) => api.on(name, fn);
+    api.registerEntity = (key, def) => entities.registerType(key, def);
+    api.isServer = isServerSide;
+    if (isClientSide) {
+      api.client = {
+        game: g, renderer: g.renderer, world: () => g.world,
+        setSetting: (key, val) => api.settings.set(key, val),
+        setRenderDistance: (v) => api.settings.set('renderDist', Math.max(2, Math.min(16, +v || 8))),
+        setResolution: (v) => api.settings.set('resScale', Math.max(0.5, Math.min(2, +v || 1))),
+        setGraphics: (v) => api.settings.set('graphics', Math.max(0, Math.min(2, +v || 1))),
+        setGamma: (v) => api.settings.set('gamma', Math.max(0, Math.min(1, +v || 0.5))),
+        setFov: (v) => api.settings.set('fov', Math.max(30, Math.min(110, +v || 70))),
+        reload: () => g.refreshModAssets(),
+        optimize: (preset) => api.settings.preset(preset),
+        screenshot: () => { try { g.canvas.toBlob(b => { if (b) { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'opusmc-' + Date.now() + '.png'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); } }); return true; } catch (e) { return false; } },
+      };
+      api.server = isServerSide ? {
+        get isHost() { return !!(g.net && g.net.role === 'host' && g.net.status !== 'off'); },
+        players: () => m.netPlayers(),
+        broadcast: (text, color) => m.serverBroadcast(text, color),
+        kick: (slot, reason) => m.serverKick(slot, reason),
+        setRules: (rules) => m.serverSetRules(rules),
+        setTime: (t) => api.world.setTime(t),
+        setWeather: (rain) => api.world.setWeather(rain),
+        runCommand: (text) => { try { runCommand(g, text); return true; } catch (e) { return false; } },
+      } : null;
     }
     api.isServer = isServerSide;
     mod.api = api;
@@ -705,6 +829,15 @@ class ModManager {
   }
   apiFor(id) { const mod = this.mods.get(id); return (mod && mod.api) ? mod.api : this.safe(); }
   // ---- 服务端辅助（房主）----
+  serverSetRules(rules) {
+    const g = this.game;
+    if (!rules || typeof rules !== 'object') return false;
+    g.rules = Object.assign({}, g.rules, rules);
+    if (g.worldMeta) g.worldMeta.rules = g.rules;
+    if (g.net && g.net.role === 'host') g.net.broadcast({ type: 'rules', rules: g.rules });
+    g.ui.message('服务器规则已更新', '#55FFFF');
+    return true;
+  }
   netPlayers() {
     const g = this.game;
     const out = [{ slot: 0, name: g.playerName || '房主', host: true }];
@@ -790,7 +923,7 @@ class ModManager {
         id: m.id, name: m.name, author: m.author, version: m.version,
         description: m.description, side: m.side, code: m.code,
         tags: m.tags || [], icon: m.icon || '', license: m.license || '',
-        homepage: m.homepage || '', publicId: m.publicId || '',
+        homepage: m.homepage || '', publicId: m.publicId || '', category: m.category || 'other',
       }))));
     } catch (e) { }
   }
@@ -916,7 +1049,9 @@ class ModManager {
     try { return JSON.parse(m[1]); } catch (e) { return null; }
   }
   addUserMod(meta, code) {
-    const name = String(meta.name || '未命名模组').slice(0, 24);
+    const name = String(meta.name || '未命名模组').slice(0, 40);
+    if (isReservedModName(name)) throw new Error('“' + name + '”是系统保留名，不能用作模组名');
+    if (isReservedModName(meta.author)) throw new Error('“' + meta.author + '”是系统保留名，不能用作作者名');
     let id = String(meta.id || '').replace(/[^a-zA-Z0-9_-]/g, '') || ('user-' + Date.now().toString(36));
     if (this.mods.has(id)) id = id + '-' + Date.now().toString(36);
     const mod = {
@@ -926,7 +1061,7 @@ class ModManager {
       description: String(meta.description || '').slice(0, 2000),
       side: meta.side || 'both', tags: meta.tags || [], icon: meta.icon || '',
       license: meta.license || '', homepage: meta.homepage || '',
-      publicId: meta.publicId || '', sourceId: meta.publicId || '',
+      publicId: meta.publicId || '', sourceId: meta.publicId || '', category: meta.category || 'other',
       code: code, enabled: true,
     };
     this.mods.set(id, mod);
@@ -965,7 +1100,7 @@ class ModManager {
       id: meta.id, name: meta.name, author: meta.author, version: meta.version,
       description: meta.summary || meta.description || '', side: meta.side || 'both',
       icon: meta.icon || '', tags: meta.tags || [], license: meta.license || '',
-      homepage: meta.homepage || '', publicId: meta.id,
+      homepage: meta.homepage || '', publicId: meta.id, category: meta.category || 'other',
     }, code);
     mod.publicId = meta.id;
     mod.description = String(meta.description || meta.summary || '').slice(0, 2000);
@@ -1118,14 +1253,16 @@ class ModLibraryScreen extends MenuScreen {
     this.loading = false;
     this.error = null;
     this.page = 1; this.pages = 1; this.total = 0;
-    this.q = ''; this.sort = 'new'; this.scroll = 0; this.sel = -1;
+    this.q = ''; this.sort = 'new'; this.category = 'all'; this.scroll = 0; this.sel = -1;
     this.busy = false; this.iconImgs = new Map();
     setTimeout(() => { if (!this.loading && !this.mods.length && !this.error) this.fetchList(); }, 0);
   }
   async fetchList() {
     this.loading = true; this.error = null; this.layout();
     try {
-      const d = await modFetchJSON(modLibraryURL('list', { q: this.q, sort: this.sort, page: this.page, limit: 20 }));
+      const params = { q: this.q, sort: this.sort, page: this.page, limit: 20 };
+      if (this.category !== 'all') params.category = this.category;
+      const d = await modFetchJSON(modLibraryURL('list', params));
       this.mods = d.mods || []; this.page = d.page || 1; this.pages = d.pages || 1; this.total = d.total || 0;
       for (const m of this.mods) {
         if (!m.icon || this.iconImgs.has(m.id)) continue;
@@ -1153,7 +1290,8 @@ class ModLibraryScreen extends MenuScreen {
       { x: cx - 154, y: by + 24, w: 74, h: 20, label: '上一页', enabled: this.page > 1, onClick: () => { this.page--; this.fetchList(); } },
       { x: cx - 76, y: by + 24, w: 150, h: 20, label: () => '第 ' + this.page + ' / ' + this.pages + ' 页 · 共 ' + this.total + ' 个', enabled: false, onClick: () => { } },
       { x: cx + 80, y: by + 24, w: 74, h: 20, label: '下一页', enabled: this.page < this.pages, onClick: () => { this.page++; this.fetchList(); } },
-      { x: cx - 154, y: by + 48, w: 150, h: 20, label: '排序: ' + (this.sort === 'new' ? '最新' : this.sort === 'downloads' ? '下载最多' : '名称'), onClick: () => { this.sort = this.sort === 'new' ? 'downloads' : this.sort === 'downloads' ? 'name' : 'new'; this.page = 1; this.fetchList(); } },
+      { x: cx - 154, y: by + 48, w: 74, h: 20, label: () => '分类:' + modCategoryName(this.category), onClick: () => { const i = MOD_CATEGORIES.findIndex(c => c.id === this.category); this.category = MOD_CATEGORIES[(i + 1) % MOD_CATEGORIES.length].id; this.page = 1; this.fetchList(); } },
+      { x: cx - 76, y: by + 48, w: 74, h: 20, label: () => '排序:' + (this.sort === 'new' ? '最新' : this.sort === 'downloads' ? '下载多' : '名称'), onClick: () => { this.sort = this.sort === 'new' ? 'downloads' : this.sort === 'downloads' ? 'name' : 'new'; this.page = 1; this.fetchList(); } },
       { x: cx + 4, y: by + 48, w: 150, h: 20, label: '返回', onClick: () => this.game.ui.open(this.parent) },
     ];
   }
@@ -1190,6 +1328,8 @@ class ModLibraryScreen extends MenuScreen {
       Font.draw(c, String(m.summary || '').slice(0, 46), 32, y + 12, '#A0A0A0');
       const tag = m.installable ? '可安装' : '仅查看';
       Font.draw(c, tag, ui.w - 12 - Font.width(tag), y + 12, m.installable ? '#55FF55' : '#FFAA00');
+      const cat = modCategoryName(m.category);
+      Font.draw(c, cat, ui.w - 12 - Font.width(cat), y + 2, '#C080FF');
       Font.draw(c, '↓' + (m.downloads || 0), ui.w - 12 - Font.width('↓' + (m.downloads || 0)), y + 2, '#808080');
     });
     if (this.mods.length > this.vis) Font.center(c, '▲▼ 滚轮翻页', ui.w / 2, this.listY + this.listH - 9, '#707070');
@@ -1242,7 +1382,7 @@ class ModDetailScreen extends MenuScreen {
     let y = 34;
     Font.draw(c, String(m.name || ''), 10, y, '#FFFF55'); y += 14;
     Font.draw(c, '作者：' + (m.author || '匿名') + '   版本：v' + (m.version || '?'), 10, y, '#55FFFF'); y += 12;
-    Font.draw(c, '类型：' + (MOD_SIDES[m.side] || MOD_SIDES.both).label + '   大小：' + this.game.mods.sizeText(m.size || 0) + '   下载：' + (m.downloads || 0), 10, y, '#AAAAAA'); y += 12;
+    Font.draw(c, '类型：' + (MOD_SIDES[m.side] || MOD_SIDES.both).label + '   分类：' + modCategoryName(m.category) + '   大小：' + this.game.mods.sizeText(m.size || 0) + '   下载：' + (m.downloads || 0), 10, y, '#AAAAAA'); y += 12;
     if (m.tags && m.tags.length) { Font.draw(c, '标签：' + m.tags.join(' / '), 10, y, '#55FF55'); y += 12; }
     if (m.homepage) { Font.draw(c, '主页：' + String(m.homepage).slice(0, 60), 10, y, '#8080FF'); y += 12; }
     y += 2;
@@ -1283,6 +1423,7 @@ class ModUploadScreen extends MenuScreen {
     this.description = '';
     this.tags = '';
     this.side = 'both';
+    this.category = 'other';
     this.installable = true;
     this.icon = '';
     this.code = "/*OPUSMOD\n{\"id\":\"my-mod\",\"name\":\"我的模组\",\"author\":\"匿名\",\"version\":\"1.0.0\",\"side\":\"both\"}\n*/\nOpusMods.register({\n  onLoad(api) {\n    api.ui.message('模组已加载！');\n  }\n});\n";
@@ -1301,9 +1442,10 @@ class ModUploadScreen extends MenuScreen {
     this.descBox = { x: cx - 154, y: 102, w: 308, h: 24 };
     this.codeBox = { x: cx - 154, y: 144, w: 308, h: 38 };
     this.widgets = [
-      { x: cx - 154, y: 188, w: 100, h: 20, label: () => '类型: ' + (MOD_SIDES[this.side] || MOD_SIDES.both).label, onClick: () => { const a = ['both', 'client', 'server']; this.side = a[(a.indexOf(this.side) + 1) % a.length]; } },
-      { x: cx - 50, y: 188, w: 100, h: 20, label: () => '可安装: ' + (this.installable ? '是' : '否'), onClick: () => { this.installable = !this.installable; } },
-      { x: cx + 54, y: 188, w: 100, h: 20, label: () => this.icon ? '图标已选' : '选择图标', onClick: () => this.pickIcon() },
+      { x: cx - 154, y: 188, w: 74, h: 20, label: () => '类型:' + (MOD_SIDES[this.side] || MOD_SIDES.both).label, onClick: () => { const a = ['both', 'client', 'server']; this.side = a[(a.indexOf(this.side) + 1) % a.length]; } },
+      { x: cx - 76, y: 188, w: 74, h: 20, label: () => '分类:' + modCategoryName(this.category), onClick: () => { const cats = MOD_CATEGORIES.filter(c => c.id !== 'all'); const i = cats.findIndex(c => c.id === this.category); this.category = cats[(i + 1) % cats.length].id; } },
+      { x: cx + 2, y: 188, w: 74, h: 20, label: () => '可安装:' + (this.installable ? '是' : '否'), onClick: () => { this.installable = !this.installable; } },
+      { x: cx + 80, y: 188, w: 74, h: 20, label: () => this.icon ? '图标已选' : '图标', onClick: () => this.pickIcon() },
       { x: cx - 154, y: 212, w: 100, h: 20, label: () => this.captcha ? '✓ 已验证' : '人机验证', onClick: () => this.verify() },
       { x: cx - 50, y: 212, w: 100, h: 20, label: () => this.busy ? '上传中…' : '上传', enabled: !this.busy, onClick: () => this.upload() },
       { x: cx + 54, y: 212, w: 100, h: 20, label: '取消', onClick: () => this.cancel() },
@@ -1379,6 +1521,8 @@ class ModUploadScreen extends MenuScreen {
     this.description = this.descTa ? this.descTa.value : this.description;
     this.code = this.codeTa ? this.codeTa.value : this.code;
     if (!this.name.trim()) { this.game.ui.message('请填写模组名称', '#FF5555'); return; }
+    if (isReservedModName(this.name)) { this.game.ui.message('这个名称是系统保留名，不能使用', '#FF5555'); return; }
+    if (isReservedModName(this.author)) { this.game.ui.message('这个作者名是系统保留名，不能使用', '#FF5555'); return; }
     if (!this.summary.trim()) { this.game.ui.message('请填写简介（别人会看到）', '#FF5555'); return; }
     if (!this.code.trim()) { this.game.ui.message('请填写模组代码', '#FF5555'); return; }
     if (!this.captcha) { this.game.ui.message('请先完成人机验证', '#FF5555'); return; }
@@ -1386,7 +1530,7 @@ class ModUploadScreen extends MenuScreen {
     try {
       const payload = {
         name: this.name.trim(), author: this.author.trim() || '匿名', version: this.version.trim() || '1.0.0',
-        summary: this.summary.trim(), description: this.description.trim(), side: this.side,
+        summary: this.summary.trim(), description: this.description.trim(), side: this.side, category: this.category,
         tags: this.tags.split(/[,，\s]+/).filter(Boolean).slice(0, 8),
         installable: !!this.installable, icon: this.icon || '', code: this.code,
         captcha: this.captcha,
@@ -1495,9 +1639,11 @@ class ModsScreen extends MenuScreen {
   onImport(text, filename) {
     const meta = ModManager.parseMeta(text) || { name: filename.replace(/\.js$/i, ''), author: '未知', version: '1.0.0', description: '导入的本地模组', side: 'both' };
     if (!text.trim()) { this.game.ui.message('文件是空的', '#FF5555'); return; }
-    const mod = this.game.mods.addUserMod(meta, text);
-    this.game.ui.message('已导入模组：' + mod.name, '#55FFFF');
-    this.sel = -1; this.layout();
+    try {
+      const mod = this.game.mods.addUserMod(meta, text);
+      this.game.ui.message('已导入模组：' + mod.name, '#55FFFF');
+      this.sel = -1; this.layout();
+    } catch (e) { this.game.ui.message('导入失败：' + e.message, '#FF5555'); }
   }
   exportSel() {
     const s = this.selected();
@@ -1597,6 +1743,7 @@ class ModConfigScreen extends MenuScreen {
       if (f.type === 'toggle') valText = v ? '开' : '关';
       else if (f.type === 'slider') valText = (Math.round(v * 100) / 100) + (f.unit || '');
       else if (f.type === 'select') valText = (f.options[v] || v);
+      else if (f.type === 'text' || f.type === 'string' || f.type === 'color') valText = String(v === undefined ? '' : v).slice(0, 28);
       else valText = String(v);
       Font.draw(c, valText, ui.w - 12 - Font.width(valText), y, '#55FF55');
       if (f.desc) Font.draw(c, f.desc.slice(0, 70), 12, y + 11, '#808080');
@@ -1620,6 +1767,11 @@ class ModConfigScreen extends MenuScreen {
           this.game.mods.setConfig(this.mod.id, f.key, keys[ni]);
         } else if (f.type === 'int') {
           this.game.mods.setConfig(this.mod.id, f.key, v + (mx < ui.w / 2 ? -1 : 1));
+        } else if (f.type === 'text' || f.type === 'string' || f.type === 'color') {
+          ui.showInput(12, this.listY + 2, ui.w - 24, 16, String(v === undefined ? '' : v), () => this.layout(), {
+            onInput: (nv) => this.game.mods.setConfig(this.mod.id, f.key, nv), onEsc: () => ui.close(), max: f.max || 120,
+          });
+          return;
         }
         Sound.click();
         return;
@@ -1689,6 +1841,8 @@ const MOD_HELP_PAGES = [
     '模组列表底部 → 「公开模组库」',
     '可搜索、安装；「上传模组」发布自己的模组',
     '上传需要完成极验 4.0 人机验证',
+    '分类：冒险/建筑/科技/魔法/工具/生存/世界生成/装饰/优化/其他',
+    '模组名不能用 admin、developer、system、管理员等保留名',
   ]},
   { title: '模组制作入门', lines: [
     '# 最小模组',
@@ -1760,9 +1914,15 @@ const MOD_HELP_PAGES = [
     'api.keybinds.register({key:"KeyK", run(){...}})',
     'api.network.register("a:chan", (api,data,from)=>{})',
     '',
-    '# 自定义贴图',
+    '# 自定义贴图 / 模型',
     'api.assets.texture("a:tex", "data:image/png;base64,...")',
     '然后 texture:"a:tex" / tile:"a:tex"',
+    'shape:"model" + model:{els,rot} 自定义方块模型',
+    '',
+    '# 设置 / 性能',
+    'api.settings.set("renderDist", 4)',
+    'api.client.optimize("low")',
+    'api.settings.preset("high")',
   ]},
 ];
 
@@ -1806,7 +1966,9 @@ class ModDownloadScreen extends MenuScreen {
         name: (url.split('/').pop() || '直链模组').replace(/\.js$/i, '').slice(0, 24),
         author: '直链下载', version: '1.0.0', description: '从 ' + url.slice(0, 80), side: 'both',
       };
-      const mod = this.game.mods.addUserMod(meta, text);
+      let mod;
+      try { mod = this.game.mods.addUserMod(meta, text); }
+      catch (e) { this.game.ui.message('安装失败：' + e.message, '#FF5555'); this.busy = false; this.layout(); return; }
       try {
         const blob = new Blob([text], { type: 'text/javascript' });
         const a = document.createElement('a');

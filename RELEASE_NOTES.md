@@ -1,4 +1,4 @@
-# OpusMC Reforged v4.0.0
+# OpusMC Reforged v4.1.0
 
 ## 这个版本是什么
 
@@ -16,7 +16,7 @@ PHP + WebGL2 的浏览器 Minecraft 复刻，包含：
 
 部署包内 `config.local.php.example` 是配置模板；真实 key 请自行填写，不要提交到公开仓库。
 
-## v4.0.0 更新
+## v4.1.0 更新
 
 ### 修复
 
@@ -63,6 +63,18 @@ PHP + WebGL2 的浏览器 Minecraft 复刻，包含：
 - 沙漠神殿、废弃矿井
 - `/locate village|desert_pyramid|mineshaft`
 - 附魔台 6 种附魔（锋利/亡灵杀手/效率/时运/保护/耐久）
+
+### v4.1.0 追加
+
+- 模组分类（冒险/建筑/科技/魔法/工具/生存/世界生成/装饰/优化/其他）
+- 模组名/作者名系统保留名校验（admin/developer/system/管理员等，客户端+服务端）
+- 更多 Mod API：`api.settings`、性能预设 `api.client.optimize`、更多事件/钩子、
+  批量 `world.fill`/`setBlockBatch`、玩家物品栏操作、自定义方块模型
+- 模组自定义指令不再强制要求世界开启作弊
+- 联机页面重做：房间号输入、复制房间码、默认地址、分阶段进度条
+- 游客空物品栏（不再自动发放创造初始物品）
+- F3+Esc 暂停、F3+F4 切换模式、F3+T 重载数据包；F3 关闭后区块边界仍保留
+- 存档导出/导入（`.opusmc.json`），兼容 v1/v2 存档与模组世界
 
 未合并：完整红石网络、村民交易、完整酿造、Web Worker、19 种附魔与铁砧惩罚。
 详见 `docs/MERGE-NOTES.md`。

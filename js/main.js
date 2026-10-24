@@ -24,7 +24,23 @@ function bindInput(g) {
     if (e.repeat && !code.startsWith('Digit')) { g.keys[code] = true; return; }
     g.keys[code] = true;
     const p = g.player, now = performance.now();
-    if (code === 'Escape') { if (g.keys['F3']) { g.debugPause = !g.debugPause; return; } ui.open(new PauseScreen(g)); return; }
+    if (code === 'F3') { g.f3Held = true; g.f3At = now; ui.debug = !ui.debug; e.preventDefault(); return; }
+    if (code === 'Escape' && (g.f3Held || g.debugPause || (ui.debug && now - (g.f3At || 0) < 600))) {
+      e.preventDefault(); g.debugPause = !g.debugPause;
+      g._ignoreUnlockUntil = performance.now() + 800;
+      if (!g.debugPause) g.keys = {};
+      return;
+    }
+    if (g.f3Held && code === 'F4') {
+      e.preventDefault();
+      g.setMode(g.mode === 'creative' ? 'survival' : 'creative');
+      ui.message('F3+F4：已切换到' + (g.mode === 'creative' ? '创造模式' : '生存模式'), '#55FFFF');
+      return;
+    }
+    if (g.f3Held && code === 'KeyT') {
+      e.preventDefault(); g.reloadData(); return;
+    }
+    if (code === 'Escape') { ui.open(new PauseScreen(g)); return; }
     if (code === 'KeyE') { ui.open(g.mode === 'creative' ? new CreativeScreen(g) : new CraftingScreen(g, 2)); return; }
     if (code === 'KeyT') { e.preventDefault(); ui.open(new ChatScreen(g)); return; }
     if (code === 'Slash') { ui.open(new ChatScreen(g, '/')); return; }
@@ -37,9 +53,8 @@ function bindInput(g) {
     }
     if (code === 'F1') ui.hideHud = !ui.hideHud;
     if (code === 'Tab') { if (g.net && g.net.status === 'connected') { g.net.tabOpen = true; e.preventDefault(); } }
-    if (code === 'F3') ui.debug = !ui.debug;
-    if (g.keys['F3'] && code === 'KeyG') { ui.debugBorders = !ui.debugBorders; ui.debug = true; }
-    if (g.keys['F3'] && code === 'KeyB') { ui.debugHitboxes = !ui.debugHitboxes; ui.debug = true; }
+    if (g.f3Held && code === 'KeyG') { ui.debugBorders = !ui.debugBorders; ui.debug = true; }
+    if (g.f3Held && code === 'KeyB') { ui.debugHitboxes = !ui.debugHitboxes; ui.debug = true; }
     if (code === 'F5') g.perspective = (g.perspective + 1) % 3;
     if (code === 'Space') {
       if (g.mode === 'creative' && now - (g.lastTap.space || 0) < 300) { p.flying = !p.flying; p.vel[1] = 0; g.lastTap.space = 0; }
@@ -54,11 +69,12 @@ function bindInput(g) {
     g.keys[e.code] = false;
     if (e.code === 'Tab' && g.net) g.net.tabOpen = false;
     if (e.code === 'KeyW') g.sprintToggle = false;
+    if (e.code === 'F3') g.f3Held = false;
   });
-  window.addEventListener('blur', () => { g.keys = {}; g.mouseBtn = [false, false, false]; g.sprintToggle = false; });
+  window.addEventListener('blur', () => { g.keys = {}; g.mouseBtn = [false, false, false]; g.sprintToggle = false; g.f3Held = false; });
   document.addEventListener('pointerlockerror', () => { g.pointerLockBroken = true; g.everCaptured = true; ui.message('鼠标锁定不可用：按 Esc 暂停，仍可点击操作', '#FFAA00'); });
   document.addEventListener('pointerlockchange', () => {
-    if (!locked()) { g.mouseBtn = [false, false, false]; g.keys = {}; if (g.state === 'play' && !ui.screen && performance.now() > (g._ignoreUnlockUntil || 0)) ui.open(new PauseScreen(g)); }
+    if (!locked()) { g.mouseBtn = [false, false, false]; g.keys = {}; if (g.debugPause || g.f3Held) { g._ignoreUnlockUntil = performance.now() + 900; return; } if (g.state === 'play' && !ui.screen && performance.now() > (g._ignoreUnlockUntil || 0)) ui.open(new PauseScreen(g)); }
   });
   window.addEventListener('mousemove', (e) => {
     if (locked() && !ui.screen && g.state === 'play') {

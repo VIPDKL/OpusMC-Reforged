@@ -90,7 +90,7 @@ const DB = {
   async putChunks(id, list) {
     if (!list.length) return;
     if (this.backend === 'idb') return this.tx('chunks', 'readwrite', s => { for (const [cx, cz, v] of list) s.put(v, id + ':' + cx + ':' + cz); });
-    if (this.backend === 'local') { for (const [cx, cz, v] of list) LS.set('mcjs:c:' + id + ':' + cx + ':' + cz, { b: Array.from(v.b), m: Array.from(v.m) }); return; }
+    if (this.backend === 'local') { for (const [cx, cz, v] of list) LS.set('mcjs:c:' + id + ':' + cx + ':' + cz, { v: v.v || 0, b: Array.from(v.b), m: Array.from(v.m) }); return; }
     for (const [cx, cz, v] of list) this.mem.chunks.set(id + ':' + cx + ':' + cz, v);
   },
 };
@@ -101,10 +101,9 @@ function encodeChunk(ch) {
 function decodeChunk(rec, ch) {
   const bs = rleDecode(rec.b, ch.blocks.length, Uint16Array);
   // v1 存档没有 v 字段，需要把早期重复注册的方块 ID 修正到规范 ID
-  if (!rec.v) for (let i = 0; i < bs.length; i++) {
-    const m = LEGACY_BLOCK_REMAP[bs[i]];
-    if (m !== undefined) bs[i] = m;
-    if (bs[i] && !BLOCKS[bs[i]]) bs[i] = 0;
+  for (let i = 0; i < bs.length; i++) {
+    if (!rec.v) { const m = LEGACY_BLOCK_REMAP[bs[i]]; if (m !== undefined) bs[i] = m; }
+    if (bs[i] && !BLOCKS[bs[i]]) bs[i] = 0; // 缺少模组时把未知方块降级为空气
   }
   ch.blocks.set(bs);
   ch.meta.set(rleDecode(rec.m, ch.meta.length, Uint8Array));

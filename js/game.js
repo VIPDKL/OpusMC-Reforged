@@ -44,6 +44,7 @@ class Game {
     this.rules = { keepInventory: false, hardcore: false };
     this.everCaptured = false;
     this.pointerLockBroken = false;
+    this.f3Held = false; this.f3At = 0;
     this._ignoreUnlockUntil = 0;
     this.net = new Net(this);
     this.mods = new ModManager(this);
@@ -101,9 +102,13 @@ class Game {
   }
   applySettings() {
     const s = this.settings;
-    this.renderer.renderDist = s.renderDist; this.renderer.gamma = s.gamma; this.renderer.showClouds = s.clouds;
+    if (this.renderer) {
+      this.renderer.renderDist = Math.max(2, Math.min(16, +s.renderDist || 8));
+      this.renderer.gamma = s.gamma; this.renderer.showClouds = !!s.clouds;
+      if (this.renderer.resScale !== s.resScale) { this.renderer.resScale = s.resScale; this.resize(); }
+    }
+    if (this.ui) this.ui.resize();
     Sound.setVolume(s.volume); Sound.setMusic(s.music);
-    if (this.renderer.resScale !== s.resScale) { this.renderer.resScale = s.resScale; this.resize(); }
   }
   // 模组启用/安装后重建贴图数组与图标图集（防抖，避免一次安装多个模组时重复构建）
   async refreshModAssets() {
@@ -307,8 +312,71 @@ class Game {
     const inv = this.player.inv;
     ['grass_block', 'stone', 'oak_planks', 'glass', 'oak_log', 'bricks', 'torch', 'tnt', 'water_bucket'].forEach((k, i) => inv.slots[i] = makeStack(k, k === 'water_bucket' ? 1 : 64));
   }
+  async reloadData() {
+    this.ui.message('正在重载数据包与模组…', '#FFFF55');
+    try {
+      await this.mods.init(true);
+      await this.renderer.prepareModAssets();
+      this.renderer.buildIcons();
+      for (const ch of this.world ? this.world.chunks.values() : []) ch.dirty = 0xFFFF;
+      this.ui.message('F3+T：数据包/模组已重载', '#55FF55');
+    } catch (e) { this.ui.message('重载失败：' + e.message, '#FF5555'); }
+  }
+  async exportWorld(id) {
+    const meta = await DB.getWorld(id);
+    if (!meta) throw new Error('世界不存在');
+    const saved = await DB.loadChunks(id);
+    const chunks = [];
+    for (const [key, rec] of saved) {
+      const cx = Math.floor(key / 65536) - 32768, cz = (key % 65536) - 32768;
+      chunks.push({ cx: cx, cz: cz, v: rec.v || 0, b: Array.from(rec.b), m: Array.from(rec.m) });
+    }
+    return { format: 'opusmc-world', version: 4, exportedAt: Date.now(), meta: meta, chunks: chunks };
+  }
+  async exportWorldFile(id) {
+    try {
+      const data = await this.exportWorld(id);
+      const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = (String(data.meta.name || 'world').replace(/[\\/:*?"<>|]/g, '_').slice(0, 40) || 'world') + '.opusmc.json';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 8000);
+      this.ui.message('已导出存档：' + data.meta.name, '#55FFFF');
+      return true;
+    } catch (e) { this.ui.message('导出失败：' + e.message, '#FF5555'); return false; }
+  }
+  async importWorld(data) {
+    let d = data;
+    if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { throw new Error('不是有效的 JSON 存档'); } }
+    if (!d || typeof d !== 'object' || !d.meta) throw new Error('存档格式不正确');
+    if (d.format && d.format !== 'opusmc-world') throw new Error('不是 OpusMC 存档');
+    const id = 'w' + Date.now().toString(36);
+    const meta = Object.assign({}, d.meta, { id: id, lastPlayed: Date.now(), created: d.meta.created || Date.now() });
+    meta.name = String(meta.name || '导入的世界').slice(0, 40) + '（导入）';
+    // 兼容 v1 存档：chunks 里可能没有 v 字段
+    const list = [];
+    for (const c of (d.chunks || [])) {
+      if (!c || typeof c.cx !== 'number' || typeof c.cz !== 'number') continue;
+      let b = c.b, m = c.m;
+      if (typeof b === 'string') { const bin = atob(b); b = new Uint16Array(bin.length / 2); for (let i = 0; i < b.length; i++) b[i] = bin.charCodeAt(i * 2) | (bin.charCodeAt(i * 2 + 1) << 8); }
+      if (typeof m === 'string') { const bin = atob(m); m = new Uint16Array(bin.length / 2); for (let i = 0; i < m.length; i++) m[i] = bin.charCodeAt(i * 2) | (bin.charCodeAt(i * 2 + 1) << 8); }
+      list.push([c.cx, c.cz, { v: c.v || 0, b: new Uint16Array(b || []), m: new Uint16Array(m || []) }]);
+    }
+    await DB.putWorld(meta);
+    await DB.putChunks(id, list);
+    this.ui.message('已导入存档：' + meta.name + '（' + list.length + ' 个区块）', '#55FF55');
+    return id;
+  }
+  async importWorldFile(file) {
+    try {
+      const text = await file.text();
+      return await this.importWorld(text);
+    } catch (e) { this.ui.message('导入失败：' + e.message, '#FF5555'); return null; }
+  }
   async saveWorld(quiet) {
     if (!this.worldMeta || this.state !== 'play') return;
+    if (this.mods) this.mods.fire('worldSave', { meta: this.worldMeta });
     const w = this.world, p = this.player, list = [];
     for (const ch of w.chunks.values()) if (ch.modified) { const rec = encodeChunk(ch); w.savedChunks.set(ckey(ch.cx, ch.cz), rec); list.push([ch.cx, ch.cz, rec]); ch.modified = false; }
     for (const k of this.dirtySaved) { const rec = w.savedChunks.get(k); if (rec) { const cx = Math.floor(k / 65536) - 32768, cz = (k % 65536) - 32768; list.push([cx, cz, rec]); } }
@@ -429,6 +497,7 @@ class Game {
     w.initLight(ch);
     ch.dirty = 0xFFFF;
     for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) { const n = w.getChunk(cx + a, cz + b); if (n && n !== ch) n.dirty |= 0xFFFF; }
+    if (this.mods) this.mods.fire('chunkLoad', ch, cx, cz);
     if (this.net) this.net.onChunkLoaded(cx, cz);
     if (this.state === 'play' || this.state === 'loading') {
       // restore saved mobs
@@ -517,6 +586,7 @@ class Game {
     this.tickCount++;
     this.world.time++;
     this.worldTime++;
+    if (this.mods) { this.mods.fire('playerTick', { player: this.player }); this.mods.fire('worldTick', this.world); }
     if (this.net) this.net.tick();
     if (this.mods) { this.mods.fire('tick'); this.mods.fire('gameTick', this); }
     const p = this.player;
@@ -910,6 +980,7 @@ class Game {
   }
   onCraft(id, count) {
     const k = ITEMS[id].key;
+    if (this.mods) this.mods.fire('craft', { id: id, key: k, count: count });
     if (k.endsWith('_planks') && this.tutStat) this.tutStat.planks = true;
     if (k === 'crafting_table') this.grant('crafting_table');
     if (k === 'wooden_pickaxe') this.grant('pickaxe');
@@ -923,15 +994,18 @@ class Game {
     if (k.endsWith('_log')) this.grant('wood');
     if (k === 'diamond') this.grant('diamond');
     if (k === 'wheat') this.grant('farm');
+    if (this.mods) this.mods.fire('itemPickup', { id: id, key: k, count: n });
   }
   onMobKilled(m, src) {
     if (src && (src.attacker === this.player || src.player)) {
       if (m.T.hostile) { this.grant('kill'); this.addXp(5); } else this.addXp(1 + ((Math.random() * 3) | 0));
     }
+    if (this.mods) this.mods.fire('mobKilled', { mob: m, source: src });
   }
   onPlayerHurt(src) { this.hurtTilt = 1; }
   onPlayerDeath(src) {
     const p = this.player;
+    if (this.mods) this.mods.fire('playerDeath', { player: p, source: src });
     const msgs = { fall: '从高处摔了下来', lava: '试图在熔岩里游泳', fire: '被烧死了', drown: '淹死了', starve: '饿死了', mob: '被杀死了', arrow: '被射杀', explosion: '爆炸了', cactus: '被戳死了', void: '掉出了这个世界' };
     let msg = msgs[src && src.type] || '死了';
     if (src && src.attacker && src.attacker.T) msg = (src.type === 'arrow' ? '被' + src.attacker.T.cn + '射杀' : '被' + src.attacker.T.cn + '杀死了');
@@ -954,6 +1028,7 @@ class Game {
     while (p.collides(p.box()) && y < HEIGHT) { y++; p.pos[1] = y; }
     p.prev = [...p.pos];
     this.ui.close();
+    if (this.mods) this.mods.fire('playerRespawn', { player: p });
   }
 
   // ---- items & drops ---------------------------------------------------------------------
@@ -969,7 +1044,7 @@ class Game {
     const e = this.dropItem(p.pos[0], p.pos[1] + p.eye() - 0.3, p.pos[2], stack, [dir[0] * 0.3, dir[1] * 0.3 + 0.1, dir[2] * 0.3]);
     if (e) e.pickup = 40;
   }
-  addEntity(e) { this.entities.push(e); }
+  addEntity(e) { this.entities.push(e); if (this.mods) this.mods.fire('entitySpawn', { entity: e }); }
   dropBlockLoot(x, y, z, id, meta, tool) {
     const b = BLOCKS[id];
     let drops;
@@ -1289,6 +1364,11 @@ class Game {
     const p = this.player, w = this.world, held = p.inv.held, def = held && ITEMS[held.id];
     const t = this.target;
     this.useCd = 4;
+    if (this.mods) {
+      const ev = { player: p, held: held, item: def, target: t, cancel: false };
+      if (!this.mods.fireCancelable('itemUse', ev)) return;
+      if (t) { const bev = { player: p, held: held, x: t.pos[0], y: t.pos[1], z: t.pos[2], id: t.id, meta: w.getMeta(...t.pos), cancel: false }; if (!this.mods.fireCancelable('blockInteract', bev)) return; }
+    }
     // entity interaction
     if (this.targetEntity && held) {
       const e = this.targetEntity;
@@ -1678,7 +1758,7 @@ class Game {
   // F3+B 碰撞箱 / F3+G 区块边界（关闭深度测试，像原版一样穿透方块显示）
   drawDebugOverlay(a) {
     const ui = this.ui;
-    if (!ui.debug || (!ui.debugBorders && !ui.debugHitboxes) || this.state !== 'play') return;
+    if ((!ui.debugBorders && !ui.debugHitboxes) || this.state !== 'play') return;
     const r = this.renderer, gl = r.gl, vb = [], vh = [];
     const seg = (arr, x0, y0, z0, x1, y1, z1) => arr.push(x0, y0, z0, 1, 1, 1, 1, x1, y1, z1, 1, 1, 1, 1);
     if (ui.debugBorders) {
